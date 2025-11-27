@@ -3,7 +3,8 @@ use rpassword::read_password;
 use serde::Deserialize;
 use std::io::{stderr, stdin, BufRead, Result as IoResult, Write};
 use std::process::exit;
-use ureq::get;
+use ureq::Error::StatusCode;
+use ureq::{get, post};
 
 const PIPELINE: &str =
     r"\A(https?://[-.0-9a-zA-Z]+)/([-./0-9a-zA-Z]+?)(?:/-)?/pipelines/(\d+)\s*\z";
@@ -89,7 +90,38 @@ fn main() -> IoResult<()> {
                                     Ok(body) => {
                                         for job in body {
                                             if !job.allow_failure {
-                                                writeln!(std_err, "{}", job.web_url)?;
+                                                let url = format!(
+                                                    "{}/api/v4/projects/{}/jobs/{}/retry",
+                                                    child.gitlab, child.project, job.id
+                                                );
+
+                                                match post(url.clone())
+                                                    .header("PRIVATE-TOKEN", token.clone())
+                                                    .send_empty()
+                                                {
+                                                    Err(StatusCode(409)) => {} // Already retried
+                                                    Err(err) => {
+                                                        writeln!(std_err, "POST {}: {}", url, err)?;
+                                                        exit(1);
+                                                    }
+                                                    Ok(mut resp) => match resp
+                                                        .body_mut()
+                                                        .read_json::<Job>()
+                                                    {
+                                                        Err(err) => {
+                                                            writeln!(
+                                                                std_err,
+                                                                "Got invalid JSON from POST {}: {}",
+                                                                url, err
+                                                            )?;
+
+                                                            exit(1);
+                                                        }
+                                                        Ok(job) => {
+                                                            writeln!(std_err, "{}", job.web_url)?;
+                                                        }
+                                                    },
+                                                }
                                             }
                                         }
                                     }
